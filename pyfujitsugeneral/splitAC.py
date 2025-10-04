@@ -23,9 +23,27 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def get_prop_from_json(property_name: str, properties: Any) -> dict[str, Any]:
+    """Extract property from JSON response with improved error handling.
+
+    Returns:
+        dict with 'value' and 'key' keys if property found, empty dict if not found
+
+    """
+    if not properties or not isinstance(properties, (list, tuple)):
+        _LOGGER.debug(
+            "Properties list is empty or invalid for property: %s", property_name
+        )
+        return {}
+
     for property_item in properties:
         if not isinstance(property_item, dict):
-            return {}
+            _LOGGER.debug("Property item is not a dict for property: %s", property_name)
+            continue
+
+        if "property" not in property_item:
+            _LOGGER.debug("Property item missing 'property' key for: %s", property_name)
+            continue
+
         if property_item["property"]["name"] == property_name:
             if property_name == "refresh":
                 return {
@@ -37,6 +55,8 @@ def get_prop_from_json(property_name: str, properties: Any) -> dict[str, Any]:
                 "value": property_item["property"]["value"],
                 "key": property_item["property"]["key"],
             }
+
+    _LOGGER.debug("Property '%s' not found in device properties", property_name)
     return {}
 
 
@@ -216,12 +236,15 @@ class SplitAC:
         # Getting supported swing modes
         SWING_DICT = {0: "None", 1: "Vertical", 2: "Horizontal", 3: "Both"}
         key = 0
+
         vertical_direction = self.get_af_vertical_direction()
-        if vertical_direction.get("value") is not None:
+        if vertical_direction and vertical_direction.get("value") is not None:
             key = key | 1
+
         horizontal_direction = self.get_af_horizontal_direction()
-        if horizontal_direction.get("value") is not None:
+        if horizontal_direction and horizontal_direction.get("value") is not None:
             key = key | 2
+
         return SWING_DICT[key]
 
     # Vertical
@@ -238,17 +261,23 @@ class SplitAC:
         # Safely getting the number of vertical vane positions
         vertical_num_dir = self.get_af_vertical_num_dir()
 
-        # Check if the dictionary is empty or the key "value" is missing or invalid
+        # Check if the property is not available (None or empty dict)
+        if not vertical_num_dir:
+            _LOGGER.debug(
+                "Vertical vane positions not available - device may not support"
+                " vertical swing"
+            )
+            return []
+
         num_positions = vertical_num_dir.get("value")
 
         if not isinstance(num_positions, int) or num_positions < 0:
-            _LOGGER.error(
-                "Invalid or missing 'value' in get_af_vertical_num_dir response: %s",
+            _LOGGER.debug(
+                "Invalid or missing 'value' in get_af_vertical_num_dir response: %s -"
+                " device may not support vertical swing",
                 vertical_num_dir,
             )
-            return (
-                []
-            )  # Return an empty list instead of None to indicate the error condition
+            return []
 
         array = np.arange(1, num_positions + 1)
         return list(array)
@@ -313,22 +342,33 @@ class SplitAC:
         # Safely getting the number of horizontal vane positions
         result = self.get_af_horizontal_num_dir()
 
-        # Check if the dictionary is empty or the key "value" is missing or invalid
+        # Check if the property is not available (None or empty dict)
+        if not result:
+            _LOGGER.debug(
+                "Horizontal vane positions not available - device may not support"
+                " horizontal swing"
+            )
+            return []
+
         value = result.get("value")
 
         if not isinstance(value, int) or value < 0:
-            _LOGGER.error(
-                "Invalid or missing 'value' in get_af_horizontal_num_dir response: %s",
+            _LOGGER.debug(
+                "Invalid or missing 'value' in get_af_horizontal_num_dir response: %s -"
+                " device may not support horizontal swing",
                 result,
             )
-            return []  # Return an empty list instead of None
+            return []
 
         array = np.arange(1, value + 1)
         return list(array)
 
     def vane_horizontal(self) -> int:
         # Getting the current horizontal vane position
-        return self.get_af_horizontal_direction()["value"]
+        horizontal_direction = self.get_af_horizontal_direction()
+        if horizontal_direction and "value" in horizontal_direction:
+            return horizontal_direction["value"]
+        return -1  # Return a default error value
 
     async def async_set_vane_horizontal_position(self, pos: int) -> None:
         # Setting the horizontal vane position
@@ -380,9 +420,13 @@ class SplitAC:
             self._refresh = get_prop_from_json("refresh", properties)
         elif isinstance(properties, int):
             # no update properties process will be invoked after that
-            await self._client.async_set_device_property(
-                self.get_refresh()["key"], properties
-            )
+            refresh_data = self.get_refresh()
+            if refresh_data and "key" in refresh_data:
+                await self._client.async_set_device_property(
+                    refresh_data["key"], properties
+                )
+            else:
+                _LOGGER.warning("Cannot set refresh property - key not available")
         else:
             raise FGLairMethodException
 
@@ -390,16 +434,23 @@ class SplitAC:
         return self._operation_mode
 
     def get_operation_mode_desc(self) -> Any:
-        return self._operation_mode_translate(self.get_operation_mode()["value"])
+        operation_mode = self.get_operation_mode()
+        if operation_mode and "value" in operation_mode:
+            return self._operation_mode_translate(operation_mode["value"])
+        return "unknown"
 
     async def async_set_operation_mode(self, properties: Any) -> None:
         if isinstance(properties, (list, tuple)):
             self._operation_mode = get_prop_from_json("operation_mode", properties)
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_operation_mode()["key"], properties
-            )
-            await self.async_update_properties()
+            operation_mode_data = self.get_operation_mode()
+            if operation_mode_data and "key" in operation_mode_data:
+                await self._client.async_set_device_property(
+                    operation_mode_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set operation mode - key not available")
         else:
             raise FGLairMethodException
 
@@ -433,10 +484,14 @@ class SplitAC:
                 "display_temperature", properties
             )
         elif isinstance(properties, float | int):
-            await self._client.async_set_device_property(
-                self.get_display_temperature()["key"], properties
-            )
-            await self.async_update_properties()
+            display_temp_data = self.get_display_temperature()
+            if display_temp_data and "key" in display_temp_data:
+                await self._client.async_set_device_property(
+                    display_temp_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set display temperature - key not available")
         else:
             raise FGLairMethodException
 
@@ -457,10 +512,14 @@ class SplitAC:
                 "outdoor_temperature", properties
             )
         elif isinstance(properties, float | int):
-            await self._client.async_set_device_property(
-                self.get_outdoor_temperature()["key"], properties
-            )
-            await self.async_update_properties()
+            outdoor_temp_data = self.get_outdoor_temperature()
+            if outdoor_temp_data and "key" in outdoor_temp_data:
+                await self._client.async_set_device_property(
+                    outdoor_temp_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set outdoor temperature - key not available")
         else:
             raise FGLairMethodException
 
@@ -476,7 +535,7 @@ class SplitAC:
                 self._adjust_temperature["key"]
             )
 
-            # Ottieni l'ultima impostazione diversa dal valore non valido
+            # Get the latest setting other than invalid value
             for datapoint in reversed(datapoints):
                 value = int(datapoint["datapoint"]["value"])
                 if value != CAPABILITY_NOT_AVAILABLE:
@@ -497,10 +556,14 @@ class SplitAC:
                 "adjust_temperature", properties
             )
         elif isinstance(properties, float | int):
-            await self._client.async_set_device_property(
-                self.get_adjust_temperature()["key"], properties
-            )
-            await self.async_update_properties()
+            adjust_temp_data = self.get_adjust_temperature()
+            if adjust_temp_data and "key" in adjust_temp_data:
+                await self._client.async_set_device_property(
+                    adjust_temp_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set adjust temperature - key not available")
         else:
             raise FGLairMethodException
 
@@ -513,10 +576,14 @@ class SplitAC:
                 "outdoor_low_noise", properties
             )
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_outdoor_low_noise()["key"], properties
-            )
-            await self.async_update_properties()
+            outdoor_low_noise_data = self.get_outdoor_low_noise()
+            if outdoor_low_noise_data and "key" in outdoor_low_noise_data:
+                await self._client.async_set_device_property(
+                    outdoor_low_noise_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set outdoor low noise - key not available")
         else:
             raise FGLairMethodException
 
@@ -527,10 +594,14 @@ class SplitAC:
         if isinstance(properties, (list, tuple)):
             self._powerful_mode = get_prop_from_json("powerful_mode", properties)
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_powerful_mode()["key"], properties
-            )
-            await self.async_update_properties()
+            powerful_mode_data = self.get_powerful_mode()
+            if powerful_mode_data and "key" in powerful_mode_data:
+                await self._client.async_set_device_property(
+                    powerful_mode_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set powerful mode - key not available")
         else:
             raise FGLairMethodException
 
@@ -547,10 +618,14 @@ class SplitAC:
         if isinstance(properties, (list, tuple)):
             self._fan_speed = get_prop_from_json("fan_speed", properties)
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_fan_speed()["key"], properties
-            )
-            await self.async_update_properties()
+            fan_speed_data = self.get_fan_speed()
+            if fan_speed_data and "key" in fan_speed_data:
+                await self._client.async_set_device_property(
+                    fan_speed_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set fan speed - key not available")
         else:
             raise FGLairMethodException
 
@@ -561,10 +636,14 @@ class SplitAC:
         if isinstance(properties, (list, tuple)):
             self._min_heat = get_prop_from_json("min_heat", properties)
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_min_heat()["key"], properties
-            )
-            await self.async_update_properties()
+            min_heat_data = self.get_min_heat()
+            if min_heat_data and "key" in min_heat_data:
+                await self._client.async_set_device_property(
+                    min_heat_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set min heat - key not available")
         else:
             raise FGLairMethodException
 
@@ -575,10 +654,14 @@ class SplitAC:
         if isinstance(properties, (list, tuple)):
             self._economy_mode = get_prop_from_json("economy_mode", properties)
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_economy_mode()["key"], properties
-            )
-            await self.async_update_properties()
+            economy_mode_data = self.get_economy_mode()
+            if economy_mode_data and "key" in economy_mode_data:
+                await self._client.async_set_device_property(
+                    economy_mode_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set economy mode - key not available")
         else:
             raise FGLairMethodException
 
@@ -599,13 +682,17 @@ class SplitAC:
                 "af_horizontal_direction", properties
             )
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_af_horizontal_direction()["key"], properties
-            )
-            await (
-                self.async_horizontal_swing_off()
-            )  # If direction set then swing will be turned OFF
-            await self.async_update_properties()
+            horizontal_direction_data = self.get_af_horizontal_direction()
+            if horizontal_direction_data and "key" in horizontal_direction_data:
+                await self._client.async_set_device_property(
+                    horizontal_direction_data["key"], properties
+                )
+                await (
+                    self.async_horizontal_swing_off()
+                )  # If direction set then swing will be turned OFF
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set horizontal direction - key not available")
         else:
             raise FGLairMethodOrDirectionOutOfRangeException
 
@@ -618,10 +705,14 @@ class SplitAC:
                 "af_horizontal_swing", properties
             )
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_af_horizontal_swing()["key"], properties
-            )
-            await self.async_update_properties()
+            horizontal_swing_data = self.get_af_horizontal_swing()
+            if horizontal_swing_data and "key" in horizontal_swing_data:
+                await self._client.async_set_device_property(
+                    horizontal_swing_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set horizontal swing - key not available")
         else:
             raise FGLairMethodException
 
@@ -642,13 +733,17 @@ class SplitAC:
                 "af_vertical_direction", properties
             )
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_af_vertical_direction()["key"], properties
-            )
-            await (
-                self.async_vertical_swing_off()
-            )  ##If direction set then swing will be turned OFF
-            await self.async_update_properties()
+            vertical_direction_data = self.get_af_vertical_direction()
+            if vertical_direction_data and "key" in vertical_direction_data:
+                await self._client.async_set_device_property(
+                    vertical_direction_data["key"], properties
+                )
+                await (
+                    self.async_vertical_swing_off()
+                )  ##If direction set then swing will be turned OFF
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set vertical direction - key not available")
         else:
             raise FGLairMethodOrDirectionOutOfRangeException
 
@@ -661,10 +756,14 @@ class SplitAC:
                 "af_vertical_swing", properties
             )
         elif isinstance(properties, int):
-            await self._client.async_set_device_property(
-                self.get_af_vertical_swing()["key"], properties
-            )
-            await self.async_update_properties()
+            vertical_swing_data = self.get_af_vertical_swing()
+            if vertical_swing_data and "key" in vertical_swing_data:
+                await self._client.async_set_device_property(
+                    vertical_swing_data["key"], properties
+                )
+                await self.async_update_properties()
+            else:
+                _LOGGER.warning("Cannot set vertical swing - key not available")
         else:
             raise FGLairMethodException
 
@@ -679,9 +778,10 @@ class SplitAC:
 
     def get_op_status_desc(self) -> str | None:
         data = None
-        if self.get_op_status() is not None:
+        op_status = self.get_op_status()
+        if op_status and op_status.get("value") is not None:
             DICT_OP_MODE = {0: "Normal", 16777216: "Defrost"}
-            status = self.get_op_status()["value"]
+            status = op_status["value"]
             data = DICT_OP_MODE.get(status, f"Unknown {status}")
             return data
         return data
@@ -716,3 +816,40 @@ class SplitAC:
             6: "heat",
         }
         return DICT_OPERATION_MODE[operation_mode]
+
+    # Helper methods for Home Assistant integration
+    def get_swing_vertical_value(self) -> bool | None:
+        """Get vertical swing value directly for HA integration."""
+        data = self.get_af_vertical_swing()
+        return data.get("value") if data else None
+
+    def get_swing_horizontal_value(self) -> bool | None:
+        """Get horizontal swing value directly for HA integration."""
+        data = self.get_af_horizontal_swing()
+        return data.get("value") if data else None
+
+    def get_swing_vertical_num_dir_value(self) -> int | None:
+        """Get vertical swing number of directions value directly for HA integration."""
+        data = self.get_af_vertical_num_dir()
+        return data.get("value") if data else None
+
+    def get_swing_horizontal_num_dir_value(self) -> int | None:
+        """Get horizontal swing number of directions value directly for HA integration."""
+        data = self.get_af_horizontal_num_dir()
+        return data.get("value") if data else None
+
+    # Helper methods for preset modes (Home Assistant integration)
+    def get_economy_mode_value(self) -> bool | None:
+        """Get economy mode value directly for HA integration."""
+        data = self.get_economy_mode()
+        return data.get("value") if data else None
+
+    def get_powerful_mode_value(self) -> bool | None:
+        """Get powerful mode value directly for HA integration."""
+        data = self.get_powerful_mode()
+        return data.get("value") if data else None
+
+    def get_min_heat_value(self) -> bool | None:
+        """Get min heat mode value directly for HA integration."""
+        data = self.get_min_heat()
+        return data.get("value") if data else None
