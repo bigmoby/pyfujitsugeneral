@@ -131,14 +131,19 @@ class FGLairApiClient:
         return await self.async_authenticate()
 
     async def _async_get_devices(self, access_token: str | None = None) -> Any:
-        token_valid = await self._async_check_token_validity(access_token)
-        if not token_valid:
-            # Token invalid requesting authentication
-            access_token = await self.async_authenticate()
+        if not access_token:
+            access_token = await self._async_read_token()
 
-        response_json = await self.api_wrapper(
-            "get", self._API_GET_DEVICES_URL, access_token=access_token
-        )
+        try:
+            response_json = await self.api_wrapper(
+                "get", self._API_GET_DEVICES_URL, access_token=access_token
+            )
+        except FGLairGeneralException:
+            access_token = await self.async_authenticate()
+            response_json = await self.api_wrapper(
+                "get", self._API_GET_DEVICES_URL, access_token=access_token
+            )
+
         if api_error := self._api_error_message(response_json):
             _LOGGER.error(
                 "FGLair API returned an error while fetching devices: %s",
@@ -179,43 +184,54 @@ class FGLairApiClient:
 
     async def async_get_device_property(self, property_code: int) -> Any:
         access_token = await self._async_read_token()
-        token_valid = await self._async_check_token_validity(access_token)
-        if not token_valid:
+        try:
+            return await self.api_wrapper(
+                "get",
+                self._API_SET_PROPERTIES_URL.format(property=property_code),
+                access_token=access_token,
+            )
+        except FGLairGeneralException:
             access_token = await self.async_authenticate()
-
-        response = await self.api_wrapper(
-            "get",
-            self._API_SET_PROPERTIES_URL.format(property=property_code),
-            access_token=access_token,
-        )
-        return response
+            return await self.api_wrapper(
+                "get",
+                self._API_SET_PROPERTIES_URL.format(property=property_code),
+                access_token=access_token,
+            )
 
     async def async_get_device_properties(self, dsn: str) -> Any:
         access_token = await self._async_read_token()
-        token_valid = await self._async_check_token_validity(access_token)
-        if not token_valid:
+        try:
+            return await self.api_wrapper(
+                "get",
+                url=self._API_GET_PROPERTIES_URL.format(DSN=dsn),
+                access_token=access_token,
+            )
+        except FGLairGeneralException:
             access_token = await self.async_authenticate()
-
-        response = await self.api_wrapper(
-            "get",
-            url=self._API_GET_PROPERTIES_URL.format(DSN=dsn),
-            access_token=access_token,
-        )
-        return response
+            return await self.api_wrapper(
+                "get",
+                url=self._API_GET_PROPERTIES_URL.format(DSN=dsn),
+                access_token=access_token,
+            )
 
     async def async_set_device_property(self, property_code: int, value: Any) -> Any:
         access_token = await self._async_read_token()
-        if not await self._async_check_token_validity(access_token):
-            access_token = await self.async_authenticate()
-
         json_data = json.dumps({"datapoint": {"value": str(value)}})
-        response = await self.api_wrapper(
-            "post",
-            url=self._API_SET_PROPERTIES_URL.format(property=property_code),
-            json_data=json_data,
-            access_token=access_token,
-        )
-        return response
+        try:
+            return await self.api_wrapper(
+                "post",
+                url=self._API_SET_PROPERTIES_URL.format(property=property_code),
+                json_data=json_data,
+                access_token=access_token,
+            )
+        except FGLairGeneralException:
+            access_token = await self.async_authenticate()
+            return await self.api_wrapper(
+                "post",
+                url=self._API_SET_PROPERTIES_URL.format(property=property_code),
+                json_data=json_data,
+                access_token=access_token,
+            )
 
     async def _async_check_token_validity(
         self, access_token: str | None = None

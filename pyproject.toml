@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name        = "pyfujitsugeneral"
-version     = "2.0.35"
+version     = "2.0.36"
 license     = {text = "MIT License"}
 description = "Python Library for interacting with Fujitsu General split air conditioners API"
 readme      = "README.md"
