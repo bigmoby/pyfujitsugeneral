@@ -3,8 +3,6 @@
 import logging
 from typing import Any
 
-import numpy as np
-
 from pyfujitsugeneral.client import FGLairApiClient
 from pyfujitsugeneral.const import (
     CAPABILITY_NOT_AVAILABLE,
@@ -279,8 +277,7 @@ class SplitAC:
             )
             return []
 
-        array = np.arange(1, num_positions + 1)
-        return list(array)
+        return list(range(1, num_positions + 1))
 
     def vane_vertical(self) -> int:
         try:
@@ -360,8 +357,7 @@ class SplitAC:
             )
             return []
 
-        array = np.arange(1, value + 1)
-        return list(array)
+        return list(range(1, value + 1))
 
     def vane_horizontal(self) -> int:
         # Getting the current horizontal vane position
